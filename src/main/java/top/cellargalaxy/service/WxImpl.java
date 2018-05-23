@@ -13,10 +13,10 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import top.cellargalaxy.configuration.WxConfiguration;
+import top.cellargalaxy.util.ExceptionUtils;
 import top.cellargalaxy.util.HttpRequestBaseDeal;
 
 import java.util.ArrayList;
-import java.util.Date;
 import java.util.List;
 
 /**
@@ -24,159 +24,141 @@ import java.util.List;
  */
 @Service
 public class WxImpl implements Wx {
-	@Autowired
-	private WxConfiguration wxConfiguration;
-	private volatile String accessToken;
 	private final Logger logger = LoggerFactory.getLogger(this.getClass());
-	
+	private volatile String accessToken;
+
+	private final String appId;
+	private final String appSecret;
+	private final boolean able;
+	private final String templateId;
+	private final String netviewUrl;
+	private final String coding;
+	private final int timeout;
+	private final String token;
+
+	@Autowired
+	public WxImpl(WxConfiguration wxConfiguration) {
+		appId = wxConfiguration.getAppID();
+		appSecret = wxConfiguration.getAppSecret();
+		able = wxConfiguration.isAble();
+		templateId = wxConfiguration.getTemplateId();
+		netviewUrl = wxConfiguration.getNetviewUrl();
+		coding = wxConfiguration.getCoding();
+		timeout = wxConfiguration.getTimeout();
+		token = wxConfiguration.getToken();
+	}
+
 	@Override
 	public boolean sendNetviewWarm(String string) {
 		try {
 			if (string == null || string.length() == 0) {
-				logger.info("不得发送空字符串信息：" + string);
+				logger.info("不得发送空信息");
 				return false;
 			}
-			JSONArray openIds = getOpenIds();
-			if (openIds == null) {
-				logger.info("获取openIds失败");
+			JSONObject openIdJSONObject = getOpenIds();
+			if (openIdJSONObject == null) {
+				logger.info("获取openId失败");
 				return false;
 			}
-			Date date = new Date();
-			logger.info(date.getTime() + "发送模板:\n" + string);
+			if (!openIdJSONObject.has("data")) {
+				logger.info("openId数据异常: " + openIdJSONObject);
+				return false;
+			}
+			JSONArray openIds = openIdJSONObject.getJSONObject("data").getJSONArray("openid");
 			for (Object openId : openIds) {
 				JSONObject jsonObject = new JSONObject();
 				jsonObject.put("value", string);
 				JSONObject data = new JSONObject();
 				data.put("info", jsonObject);
-				if (sendTemplate(openId.toString(), wxConfiguration.getTemplateId(), wxConfiguration.getNetviewUrl(), data)) {
-					logger.info("成功向" + openId.toString() + "发送模板" + date.getTime());
-				} else {
-					logger.info("失败向" + openId.toString() + "发送模板" + date.getTime());
-				}
+				sendTemplate(openId.toString(), templateId, netviewUrl, data);
 			}
 			return true;
 		} catch (Exception e) {
 			e.printStackTrace();
+			logger.info("监控发送异常:\n" + ExceptionUtils.exception2String(e));
 		}
 		return false;
 	}
-	
+
 	@Override
 	public boolean checkToken(String token) {
-		try {
-			return token != null && token.equals(wxConfiguration.getToken());
-		} catch (Exception e) {
-			e.printStackTrace();
-		}
-		return false;
+		return this.token.equals(token);
 	}
-	
-	private JSONArray getOpenIds() {
-		try {
-			if (wxConfiguration.isTest()) {
-				JSONArray jsonArray = new JSONArray();
-				jsonArray.put(wxConfiguration.getTestOpenId());
-				return jsonArray;
-			}
-			List<NameValuePair> params = new ArrayList<>();
-			params.add(new BasicNameValuePair("access_token", getAccessToken()));
-			HttpGet httpGet = HttpRequestBaseDeal.createHttpGet("https://api.weixin.qq.com/cgi-bin/user/get", params);
-			if (httpGet == null) {
-				return null;
-			}
-			String result = HttpRequestBaseDeal.executeHttpRequestBase(httpGet, wxConfiguration.getTimeout());
-			if (result == null) {
-				return null;
-			}
-			JSONObject jsonObject = new JSONObject(result);
-			if (jsonObject.has("data")) {
-				return jsonObject.getJSONObject("data").getJSONArray("openid");
-			} else {
-				logger.info("openId响应异常 " + jsonObject);
-			}
-		} catch (Exception e) {
-			e.printStackTrace();
+
+	private JSONObject getOpenIds() {
+		List<NameValuePair> params = new ArrayList<>();
+		params.add(new BasicNameValuePair("access_token", getAccessToken()));
+		HttpGet httpGet = HttpRequestBaseDeal.createHttpGet("https://api.weixin.qq.com/cgi-bin/user/get", params);
+		if (httpGet == null) {
+			return null;
 		}
-		return null;
-	}
-	
-	private boolean sendTemplate(String openId, String templateId, String url, JSONObject data) {
-		try {
-			List<NameValuePair> params = new ArrayList<>();
-			params.add(new BasicNameValuePair("access_token", getAccessToken()));
-			HttpPost httpPost = HttpRequestBaseDeal.createHttpPost("https://api.weixin.qq.com/cgi-bin/message/template/send", params);
-			if (httpPost == null) {
-				return false;
-			}
-			httpPost.addHeader("Content-Type", "application/json;charset=utf-8");
-			JSONObject jsonObject = new JSONObject();
-			jsonObject.put("touser", openId);
-			jsonObject.put("template_id", templateId);
-			jsonObject.put("url", url);
-			jsonObject.put("data", data);
-			StringEntity stringEntity = new StringEntity(jsonObject.toString(), "utf-8");
-			stringEntity.setContentEncoding("utf-8");
-			stringEntity.setContentType("application/json");
-			httpPost.setEntity(stringEntity);
-			String result = HttpRequestBaseDeal.executeHttpRequestBase(httpPost, wxConfiguration.getTimeout());
-			if (result == null) {
-				return false;
-			}
-			JSONObject object = new JSONObject(result);
-			if (object.has("errcode") && object.getInt("errcode") == 0) {
-				return true;
-			} else {
-				logger.info("模板发送响应异常：" + object);
-				return false;
-			}
-		} catch (Exception e) {
-			e.printStackTrace();
+		String result = HttpRequestBaseDeal.executeHttpRequestBase(httpGet, timeout);
+		if (result == null) {
+			return null;
 		}
-		return false;
+		return new JSONObject(result);
 	}
-	
-	
+
+	private JSONObject sendTemplate(String openId, String templateId, String url, JSONObject data) {
+		List<NameValuePair> params = new ArrayList<>();
+		params.add(new BasicNameValuePair("access_token", getAccessToken()));
+		HttpPost httpPost = HttpRequestBaseDeal.createHttpPost("https://api.weixin.qq.com/cgi-bin/message/template/send", params);
+		if (httpPost == null) {
+			return null;
+		}
+		httpPost.addHeader("Content-Type", "application/json;charset=" + coding);
+		JSONObject jsonObject = new JSONObject();
+		jsonObject.put("touser", openId);
+		jsonObject.put("template_id", templateId);
+		jsonObject.put("url", url);
+		jsonObject.put("data", data);
+		StringEntity stringEntity = new StringEntity(jsonObject.toString(), coding);
+		stringEntity.setContentEncoding(coding);
+		stringEntity.setContentType("application/json");
+		httpPost.setEntity(stringEntity);
+		String result = HttpRequestBaseDeal.executeHttpRequestBase(httpPost, timeout);
+		if (result == null) {
+			return null;
+		}
+		return new JSONObject(result);
+	}
+
 	@Scheduled(fixedRate = 1000 * 60 * 30)
 	public void flushAccessToken() {
-		try {
-			if (!wxConfiguration.isAble()) {
-				return;
-			}
-			List<NameValuePair> params = new ArrayList<>();
-			params.add(new BasicNameValuePair("grant_type", "client_credential"));
-			params.add(new BasicNameValuePair("appid", wxConfiguration.getAppID()));
-			params.add(new BasicNameValuePair("secret", wxConfiguration.getAppSecret()));
-			HttpGet httpGet = HttpRequestBaseDeal.createHttpGet("https://api.weixin.qq.com/cgi-bin/token", params);
-			if (httpGet == null) {
-				return;
-			}
-			String result = HttpRequestBaseDeal.executeHttpRequestBase(httpGet, wxConfiguration.getTimeout());
-			if (result == null) {
-				return;
-			}
-			JSONObject jsonObject = new JSONObject(result);
-			if (jsonObject.has("access_token")) {
-				accessToken = jsonObject.getString("access_token");
-				logger.info("成功刷新accessToken " + accessToken);
-			} else {
-				logger.info("失败刷新accessToken " + jsonObject);
-			}
-		} catch (Exception e) {
-			e.printStackTrace();
+		if (!able) {
+			return;
+		}
+		List<NameValuePair> params = new ArrayList<>();
+		params.add(new BasicNameValuePair("grant_type", "client_credential"));
+		params.add(new BasicNameValuePair("appid", appId));
+		params.add(new BasicNameValuePair("secret", appSecret));
+		HttpGet httpGet = HttpRequestBaseDeal.createHttpGet("https://api.weixin.qq.com/cgi-bin/token", params);
+		if (httpGet == null) {
+			return;
+		}
+		String result = HttpRequestBaseDeal.executeHttpRequestBase(httpGet, timeout);
+		if (result == null) {
+			logger.info("请求刷新accessToken失败");
+			return;
+		}
+		JSONObject jsonObject = new JSONObject(result);
+		if (jsonObject.has("access_token")) {
+			accessToken = jsonObject.getString("access_token");
+			logger.info("成功刷新accessToken " + accessToken);
+		} else {
+			logger.info("失败刷新accessToken " + jsonObject);
 		}
 	}
-	
-	
+
 	public String getAccessToken() {
 		if (accessToken == null) {
 			flushAccessToken();
 		}
 		return accessToken;
 	}
-	
+
 	public void setAccessToken(String accessToken) {
 		this.accessToken = accessToken;
 	}
-	
-	
+
 }
